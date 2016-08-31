@@ -208,50 +208,118 @@ abstract class FrameCompressor {
         @Override
         public Frame compress(Frame frame) throws IOException {
             ByteBuf input = frame.body;
-            // Using internalNioBuffer(...) as we only hold the reference in this method and so can
-            // reduce Object allocations.
-            ByteBuffer in = inputNioBuffer(input, input.readerIndex(), input.readableBytes());
+            int maxCompressedLength = compressor.maxCompressedLength(input.readableBytes());
 
-            int maxCompressedLength = compressor.maxCompressedLength(in.remaining());
-            ByteBuf output = input.alloc().directBuffer(INTEGER_BYTES + maxCompressedLength);
-            try {
-                output.writeInt(in.remaining());
-                // Using internalNioBuffer(...) as we only hold the reference in this method and so can
-                // reduce Object allocations.
-                ByteBuffer out = output.internalNioBuffer(output.writerIndex(), output.writableBytes());
-                int written = compressor.compress(in, in.position(), in.remaining(), out, out.position(), out.remaining());
-                // Set the writer index so the amount of written bytes is reflected
-                output.writerIndex(output.writerIndex() + written);
-                return frame.with(output);
-            } catch (Exception e) {
-                // release output buffer so we not leak and rethrow exception.
-                output.release();
-                throw new IOException(e);
+            final ByteBuf frameBody;
+            if (input.isDirect()) {
+                // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
+                // LZ4Compressor.compress and so eliminate memory copies.
+                ByteBuf output = input.alloc().directBuffer(INTEGER_BYTES + maxCompressedLength);
+                try {
+                    ByteBuffer in = inputNioBuffer(input, input.readerIndex(), input.readableBytes());
+                    // Increase reader index.
+                    input.readerIndex(input.writerIndex());
+
+                    output.writeInt(in.remaining());
+
+                    ByteBuffer out = output.internalNioBuffer(output.writerIndex(), output.writableBytes());
+                    int written = compressor.compress(in, in.position(), in.remaining(), out, out.position(), out.remaining());
+                    // Set the writer index so the amount of written bytes is reflected
+                    output.writerIndex(output.writerIndex() + written);
+                    frameBody = output;
+                } catch (Exception e) {
+                    // release output buffer so we not leak and rethrow exception.
+                    output.release();
+                    throw new IOException(e);
+                }
+            } else {
+                // Not a direct buffer so use byte arrays...
+                int inOffset = input.arrayOffset() + input.readerIndex();
+                byte[] in = input.array();
+                int len = input.readableBytes();
+                // Increase reader index.
+                input.readerIndex(input.writerIndex());
+
+                // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
+                // can eliminate the overhead of allocate a new byte[].
+                ByteBuf output = input.alloc().heapBuffer(maxCompressedLength);
+                try {
+                    output.writeInt(len);
+                    // calculate the correct offset.
+                    int offset = output.arrayOffset() + output.writerIndex();
+                    byte[] out = output.array();
+                    int written = compressor.compress(in, inOffset, len, out, offset);
+
+                    // Set the writer index so the amount of written bytes is reflected
+                    output.writerIndex(output.writerIndex() + written);
+                    frameBody = output;
+                } catch (Exception e) {
+                    // release output buffer so we not leak and rethrow exception.
+                    output.release();
+                    throw new IOException (e);
+                }
             }
+
+            return frame.with(frameBody);
         }
 
         @Override
         public Frame decompress(Frame frame) throws IOException {
             ByteBuf input = frame.body;
-            int readable = input.readableBytes();
-            int uncompressedLength = input.readInt();
-            ByteBuffer in = inputNioBuffer(input, input.readerIndex(), input.readableBytes());
-            input.readerIndex(input.writerIndex());
-            ByteBuf output = input.alloc().directBuffer(uncompressedLength);
-            try {
-                ByteBuffer out = output.internalNioBuffer(output.writerIndex(), output.writableBytes());
-                int read = decompressor.decompress(in, in.position(), out, out.position(), out.remaining());
-                if (read != readable - INTEGER_BYTES)
-                    throw new IOException("Compressed lengths mismatch");
+            final ByteBuf frameBody;
 
-                // Set the writer index so the amount of written bytes is reflected
-                output.writerIndex(output.writerIndex() + uncompressedLength);
-                return frame.with(output);
-            } catch (Exception e) {
-                // release output buffer so we not leak and rethrow exception.
-                output.release();
-                throw new IOException(e);
+            if (input.isDirect()) {
+                // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
+                // LZ4Compressor.decompress and so eliminate memory copies.
+                int readable = input.readableBytes();
+                int uncompressedLength = input.readInt();
+                ByteBuffer in = inputNioBuffer(input, input.readerIndex(), input.readableBytes());
+                // Increase reader index.
+                input.readerIndex(input.writerIndex());
+                ByteBuf output = input.alloc().directBuffer(uncompressedLength);
+                try {
+                    ByteBuffer out = output.internalNioBuffer(output.writerIndex(), output.writableBytes());
+                    int read = decompressor.decompress(in, in.position(), out, out.position(), out.remaining());
+                    if (read != readable - INTEGER_BYTES)
+                        throw new IOException("Compressed lengths mismatch");
+
+                    // Set the writer index so the amount of written bytes is reflected
+                    output.writerIndex(output.writerIndex() + uncompressedLength);
+                    frameBody = output;
+                } catch (Exception e) {
+                    // release output buffer so we not leak and rethrow exception.
+                    output.release();
+                    throw new IOException(e);
+                }
+            } else {
+                // Not a direct buffer so use byte arrays...
+                byte[] in = input.array();
+                int len = input.readableBytes();
+                int uncompressedLength = input.readInt();
+                int inOffset = input.arrayOffset() + input.readerIndex();
+                // Increase reader index.
+                input.readerIndex(input.writerIndex());
+
+                // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
+                // can eliminate the overhead of allocate a new byte[].
+                ByteBuf output = input.alloc().heapBuffer(uncompressedLength);
+                try {
+                    int offset = output.arrayOffset() + output.writerIndex();
+                    byte out[] = output.array();
+                    int read = decompressor.decompress(in, inOffset, out, offset, uncompressedLength);
+                    if (read != len - INTEGER_BYTES)
+                        throw new IOException("Compressed lengths mismatch");
+
+                    // Set the writer index so the amount of written bytes is reflected
+                    output.writerIndex(output.writerIndex() + uncompressedLength);
+                    frameBody = output;
+                } catch (Exception e) {
+                    // release output buffer so we not leak and rethrow exception.
+                    output.release();
+                    throw new IOException (e);
+                }
             }
+            return frame.with(frameBody);
         }
 
         private static ByteBuffer inputNioBuffer(ByteBuf buf, int index, int len) {
