@@ -294,8 +294,8 @@ class RequestHandler {
             if (allowSpeculativeExecutions && nextExecutionScheduled.compareAndSet(false, true))
                 scheduleExecution(speculativeExecutionPlan.nextExecution(host));
 
-            int timeout = manager.configuration().getPoolingOptions().getPoolTimeoutMillis();
-            ListenableFuture<Connection> connectionFuture = pool.borrowConnection(timeout, TimeUnit.MILLISECONDS);
+            ListenableFuture<Connection> connectionFuture = pool.borrowConnection(
+                    manager.configuration().getPoolingOptions().getMaxQueueSize());
             Futures.addCallback(connectionFuture, new FutureCallback<Connection>() {
                 @Override
                 public void onSuccess(Connection connection) {

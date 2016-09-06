@@ -979,10 +979,10 @@ public class HostConnectionPoolTest extends ScassandraTestBase.PerClassCluster {
     }
 
     /**
-     * <p>
+     * <p/>
      * This test uses a table named "Java349" with 1000 column and performs asynchronously 100k insertions. While the
      * insertions are being executed, the number of opened connection is monitored.
-     * <p>
+     * <p/>
      * If at anytime, the number of opened connections is negative, this test will fail.
      *
      * @jira_ticket JAVA-349
@@ -1076,7 +1076,7 @@ public class HostConnectionPoolTest extends ScassandraTestBase.PerClassCluster {
 
         private MockRequest(HostConnectionPool pool) throws ConnectionException, TimeoutException, BusyConnectionException {
             try {
-                connection = Uninterruptibles.getUninterruptibly(pool.borrowConnection(500, TimeUnit.MILLISECONDS));
+                connection = Uninterruptibles.getUninterruptibly(pool.borrowConnection(0));
             } catch (ExecutionException e) {
                 throw new AssertionError(e.getCause());
             }

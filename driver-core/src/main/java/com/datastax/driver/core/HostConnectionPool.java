@@ -27,7 +27,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -57,6 +60,7 @@ class HostConnectionPool implements Connection.Owner {
     final Set<Connection> trash = new CopyOnWriteArraySet<Connection>();
 
     private final Queue<SettableFuture<Connection>> pendingBorrows = new ConcurrentLinkedQueue<SettableFuture<Connection>>();
+    private final AtomicInteger pendingBorrowCount = new AtomicInteger();
 
     private final Runnable newConnectionTask;
 
@@ -188,7 +192,7 @@ class HostConnectionPool implements Connection.Owner {
         return manager.configuration().getPoolingOptions();
     }
 
-    public ListenableFuture<Connection> borrowConnection(long timeout, TimeUnit unit) {
+    public ListenableFuture<Connection> borrowConnection(int maxQueueSize) {
         Phase phase = this.phase.get();
         if (phase != Phase.READY)
             return Futures.immediateFailedFuture(new ConnectionException(host.getSocketAddress(), "Pool is " + phase));
@@ -206,7 +210,7 @@ class HostConnectionPool implements Connection.Owner {
                         manager.blockingExecutor().submit(newConnectionTask);
                     }
                 }
-                return enqueue();
+                return enqueue(maxQueueSize);
             }
         }
 
@@ -227,13 +231,13 @@ class HostConnectionPool implements Connection.Owner {
             // This might maybe happen if the number of core connections per host is 0 and a connection was trashed between
             // the previous check to connections and now. But in that case, the line above will have trigger the creation of
             // a new connection, so just wait that connection and move on
-            return enqueue();
+            return enqueue(maxQueueSize);
         } else {
             while (true) {
                 int inFlight = leastBusy.inFlight.get();
 
                 if (inFlight >= Math.min(leastBusy.maxAvailableStreams(), options().getMaxRequestsPerConnection(hostDistance))) {
-                    return enqueue();
+                    return enqueue(maxQueueSize);
                 }
 
                 if (leastBusy.inFlight.compareAndSet(inFlight, inFlight + 1))
@@ -263,12 +267,27 @@ class HostConnectionPool implements Connection.Owner {
         return leastBusy.setKeyspaceAsync(manager.poolsState.keyspace);
     }
 
-    private ListenableFuture<Connection> enqueue() {
-        // TODO limit queue size
+    private ListenableFuture<Connection> enqueue(int maxQueueSize) {
+        if (maxQueueSize == 0) {
+            return Futures.immediateFailedFuture(new ConnectionException(host.getSocketAddress(),
+                    "Pool is busy (no available connection and the max queue size is 0)"));
+        }
+
+        while (true) {
+            int count = pendingBorrowCount.get();
+            if (count >= maxQueueSize) {
+                return Futures.immediateFailedFuture(new ConnectionException(host.getSocketAddress(),
+                        "Pool is busy (no available connection and the queue has reached its max size " + maxQueueSize
+                                + " )"));
+            }
+            if (pendingBorrowCount.compareAndSet(count, count + 1)) {
+                break;
+            }
+        }
+
         SettableFuture<Connection> future = SettableFuture.create();
         pendingBorrows.add(future);
         return future;
-        // TODO purge queue on shutdown
     }
 
     public void returnConnection(Connection connection) {
@@ -314,6 +333,7 @@ class HostConnectionPool implements Connection.Owner {
                 // Another thread has emptied the queue since our last check, restore the count
                 connection.inFlight.decrementAndGet();
             } else {
+                pendingBorrowCount.decrementAndGet();
                 pendingBorrow.set(connection);
             }
         }
