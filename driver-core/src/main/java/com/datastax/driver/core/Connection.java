@@ -98,7 +98,6 @@ class Connection {
 
     private final ListenableFuture<Connection> thisFuture;
 
-
     /**
      * Create a new connection to a Cassandra node and associate it with the given pool.
      *

@@ -268,14 +268,6 @@ class RequestHandler {
             try {
                 Host host;
                 while (!isDone.get() && (host = queryPlan.next()) != null && !queryStateRef.get().isCancelled()) {
-
-                    HostConnectionPool pool = manager.pools.get(host);
-                    if (pool == null || pool.isClosed())
-                        continue;
-
-                    if (logger.isTraceEnabled())
-                        logger.trace("[{}] Querying node {}", id, host);
-
                     if (query(host))
                         return;
                 }
@@ -290,6 +282,9 @@ class RequestHandler {
             HostConnectionPool pool = manager.pools.get(host);
             if (pool == null || pool.isClosed())
                 return false;
+
+            if (logger.isTraceEnabled())
+                logger.trace("[{}] Querying node {}", id, host);
 
             if (allowSpeculativeExecutions && nextExecutionScheduled.compareAndSet(false, true))
                 scheduleExecution(speculativeExecutionPlan.nextExecution(host));

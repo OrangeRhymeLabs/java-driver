@@ -435,7 +435,7 @@ public class PoolingOptions {
      * Sets the maximum number of requests that get enqueued if no connection is available.
      * <p/>
      * If the queue grows past this value, new requests will be rejected immediately (and the driver will move to the
-     * next host in the query plan).
+     * next host in the query plan). This limit is per connection pool, not global to the driver.
      * <p/>
      * The default value is {@value DEFAULT_MAX_QUEUE_SIZE}. If this option is set to zero, the driver will never
      * enqueue requests.
