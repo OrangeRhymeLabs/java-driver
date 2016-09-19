@@ -78,7 +78,7 @@ class HostConnectionPool implements Connection.Owner {
     // following threshold, we just replace the connection by a new one.
     private final int minAllowedStreams;
 
-    public HostConnectionPool(Host host, HostDistance hostDistance, SessionManager manager) {
+    HostConnectionPool(Host host, HostDistance hostDistance, SessionManager manager) {
         assert hostDistance != HostDistance.IGNORED;
         this.host = host;
         this.hostDistance = hostDistance;
@@ -193,7 +193,7 @@ class HostConnectionPool implements Connection.Owner {
         return manager.configuration().getPoolingOptions();
     }
 
-    public ListenableFuture<Connection> borrowConnection(int maxQueueSize) {
+    ListenableFuture<Connection> borrowConnection(int maxQueueSize) {
         Phase phase = this.phase.get();
         if (phase != Phase.READY)
             return Futures.immediateFailedFuture(new ConnectionException(host.getSocketAddress(), "Pool is " + phase));
@@ -288,7 +288,7 @@ class HostConnectionPool implements Connection.Owner {
         return future;
     }
 
-    public void returnConnection(Connection connection) {
+    void returnConnection(Connection connection) {
         connection.inFlight.decrementAndGet();
         totalInFlight.decrementAndGet();
 
@@ -312,18 +312,22 @@ class HostConnectionPool implements Connection.Owner {
         }
     }
 
+    // When a connection gets returned to the pool, check if there are pending borrows that can be completed with it.
     private void dequeue(Connection connection) {
         while (!pendingBorrows.isEmpty()) {
 
-            // Try to acquire the right to use the connection
+            // We can only reuse the connection if it's under its maximum number of inFlight requests.
+            // Do this atomically, as we could be competing with other borrowConnection or dequeue calls.
             while (true) {
                 int inFlight = connection.inFlight.get();
                 if (inFlight >= Math.min(connection.maxAvailableStreams(), options().getMaxRequestsPerConnection(hostDistance))) {
                     // Connection is full again, stop dequeuing
                     return;
                 }
-                if (connection.inFlight.compareAndSet(inFlight, inFlight + 1))
+                if (connection.inFlight.compareAndSet(inFlight, inFlight + 1)) {
+                    // We acquired the right to reuse the connection for one request, proceed
                     break;
+                }
             }
 
             SettableFuture<Connection> pendingBorrow = pendingBorrows.poll();
@@ -549,11 +553,11 @@ class HostConnectionPool implements Connection.Owner {
         connection.closeAsync();
     }
 
-    public final boolean isClosed() {
+    final boolean isClosed() {
         return closeFuture.get() != null;
     }
 
-    public final CloseFuture closeAsync() {
+    final CloseFuture closeAsync() {
 
         CloseFuture future = closeFuture.get();
         if (future != null)
@@ -572,7 +576,7 @@ class HostConnectionPool implements Connection.Owner {
                 : closeFuture.get(); // We raced, it's ok, return the future that was actually set
     }
 
-    public int opened() {
+    int opened() {
         return open.get();
     }
 
@@ -607,7 +611,7 @@ class HostConnectionPool implements Connection.Owner {
 
     // This creates connections if we have less than core connections (if we
     // have more than core, connection will just get trash when we can).
-    public void ensureCoreConnections() {
+    void ensureCoreConnections() {
         if (isClosed())
             return;
 

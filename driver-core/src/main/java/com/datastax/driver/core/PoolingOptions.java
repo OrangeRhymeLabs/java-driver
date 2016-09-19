@@ -415,7 +415,7 @@ public class PoolingOptions {
 
     /**
      * @deprecated the connection pool does not use a timeout anymore, incoming requests are now throttled with a
-     * threshold on the {@link #setMaxQueueSize(int)}  queue size}. This method has no effect.
+     * threshold on the {@link #setMaxQueueSize(int) queue size}. This method has no effect.
      */
     @Deprecated
     public PoolingOptions setPoolTimeoutMillis(int poolTimeoutMillis) {
