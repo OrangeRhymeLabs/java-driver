@@ -16,6 +16,7 @@
 package com.datastax.driver.core;
 
 import com.datastax.driver.core.exceptions.AuthenticationException;
+import com.datastax.driver.core.exceptions.BusyPoolException;
 import com.datastax.driver.core.exceptions.ConnectionException;
 import com.datastax.driver.core.exceptions.UnsupportedProtocolVersionException;
 import com.datastax.driver.core.utils.MoreFutures;
@@ -269,16 +270,13 @@ class HostConnectionPool implements Connection.Owner {
 
     private ListenableFuture<Connection> enqueue(int maxQueueSize) {
         if (maxQueueSize == 0) {
-            return Futures.immediateFailedFuture(new ConnectionException(host.getSocketAddress(),
-                    "Pool is busy (no available connection and the max queue size is 0)"));
+            return Futures.immediateFailedFuture(new BusyPoolException(host.getSocketAddress(), 0));
         }
 
         while (true) {
             int count = pendingBorrowCount.get();
             if (count >= maxQueueSize) {
-                return Futures.immediateFailedFuture(new ConnectionException(host.getSocketAddress(),
-                        "Pool is busy (no available connection and the queue has reached its max size " + maxQueueSize
-                                + " )"));
+                return Futures.immediateFailedFuture(new BusyPoolException(host.getSocketAddress(), maxQueueSize));
             }
             if (pendingBorrowCount.compareAndSet(count, count + 1)) {
                 break;

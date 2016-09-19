@@ -326,9 +326,8 @@ class RequestHandler {
 
                 @Override
                 public void onFailure(Throwable t) {
-                    if (t instanceof TimeoutException) {
-                        logError(host.getSocketAddress(),
-                                new DriverException("Timeout while trying to acquire available connection (you may want to increase the driver number of per-host connections)", t));
+                    if (t instanceof BusyPoolException) {
+                        logError(host.getSocketAddress(), t);
                     } else {
                         logger.error("Unexpected error while querying " + host.getAddress(), t);
                         logError(host.getSocketAddress(), t);
