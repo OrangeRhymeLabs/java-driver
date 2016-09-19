@@ -57,7 +57,7 @@ public class BusyPoolException extends DriverException implements CoordinatorExc
     }
 
     private static String buildMessage(InetSocketAddress address, int queueSize) {
-        return String.format("[%s] Pool is busy (no available connection and the queue has reached its max size %d",
+        return String.format("[%s] Pool is busy (no available connection and the queue has reached its max size %d)",
                 address.getAddress(),
                 queueSize);
     }
