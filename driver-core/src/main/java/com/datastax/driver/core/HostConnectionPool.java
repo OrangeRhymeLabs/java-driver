@@ -285,6 +285,13 @@ class HostConnectionPool implements Connection.Owner {
 
         SettableFuture<Connection> future = SettableFuture.create();
         pendingBorrows.add(future);
+
+        // If we raced with shutdown, make sure the future will be completed. This has no effect if it was properly
+        // handled in closeAsync.
+        if (phase.get() == Phase.CLOSING) {
+            future.setException(new ConnectionException(host.getSocketAddress(), "Pool is shutdown"));
+        }
+
         return future;
     }
 
