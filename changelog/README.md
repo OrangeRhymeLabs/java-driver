@@ -7,6 +7,7 @@
 - [bug] JAVA-1258: Regression: Mapper cannot map a materialized view after JAVA-1126.
 - [bug] JAVA-1101: Batch and BatchStatement should consider inner statements to determine query idempotence
 - [improvement] JAVA-1262: Use ParseUtils for quoting & unquoting.
+- [improvement] JAVA-893: Make connection pool non-blocking
 
 
 ### 3.0.3
