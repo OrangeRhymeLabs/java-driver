@@ -333,6 +333,7 @@ class HostConnectionPool implements Connection.Owner {
                 // Another thread has emptied the queue since our last check, restore the count
                 connection.inFlight.decrementAndGet();
             } else {
+                totalInFlight.incrementAndGet();
                 pendingBorrowCount.decrementAndGet();
                 pendingBorrow.set(connection);
             }
