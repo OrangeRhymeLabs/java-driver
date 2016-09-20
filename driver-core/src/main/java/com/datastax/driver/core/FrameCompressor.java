@@ -17,7 +17,6 @@ package com.datastax.driver.core;
 
 import com.datastax.driver.core.exceptions.DriverInternalError;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import net.jpountz.lz4.LZ4Factory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,118 +60,119 @@ abstract class FrameCompressor {
         @Override
         public Frame compress(Frame frame) throws IOException {
             ByteBuf input = frame.body;
+            ByteBuf frameBody = input.isDirect() ? compressDirect(input) : compressHeap(input);
+            return frame.with(frameBody);
+        }
+
+        private ByteBuf compressDirect(ByteBuf input) throws IOException {
             int maxCompressedLength = Snappy.maxCompressedLength(input.readableBytes());
-
-            final ByteBuf frameBody;
-            if (input.isDirect()) {
-                // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
-                // Snappy.compress(ByteBuffer, ByteBuffer) and so eliminate memory copies.
-                ByteBuf output = input.alloc().directBuffer(maxCompressedLength);
-                try {
-                    // Using internalNioBuffer(...) as we only hold the reference in this method and so can
-                    // reduce Object allocations.
-                    ByteBuffer in = input.internalNioBuffer(input.readerIndex(), input.readableBytes());
-                    // Increase reader index.
-                    input.readerIndex(input.writerIndex());
-
-                    ByteBuffer out = output.internalNioBuffer(output.writerIndex(), output.writableBytes());
-                    int written = Snappy.compress(in, out);
-                    // Set the writer index so the amount of written bytes is reflected
-                    output.writerIndex(output.writerIndex() + written);
-                    frameBody = output;
-                } catch (IOException e) {
-                    // release output buffer so we not leak and rethrow exception.
-                    output.release();
-                    throw e;
-                }
-            } else {
-                int inOffset = input.arrayOffset() + input.readerIndex();
-                byte[] in = input.array();
-                int len = input.readableBytes();
+            // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
+            // Snappy.compress(ByteBuffer, ByteBuffer) and so eliminate memory copies.
+            ByteBuf output = input.alloc().directBuffer(maxCompressedLength);
+            try {
+                ByteBuffer in = inputNioBuffer(input);
                 // Increase reader index.
                 input.readerIndex(input.writerIndex());
 
-                // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
-                // can eliminate the overhead of allocate a new byte[].
-                ByteBuf output = input.alloc().heapBuffer(maxCompressedLength);
-                try {
-                    // Calculate the correct offset.
-                    int offset = output.arrayOffset() + output.writerIndex();
-                    byte[] out = output.array();
-                    int written = Snappy.compress(in, inOffset, len, out, offset);
-
-                    // Increase the writerIndex with the written bytes.
-                    output.writerIndex(output.writerIndex() + written);
-                    frameBody = output;
-                } catch (IOException e) {
-                    // release output buffer so we not leak and rethrow exception.
-                    output.release();
-                    throw e;
-                }
+                ByteBuffer out = outputNioBuffer(output);
+                int written = Snappy.compress(in, out);
+                // Set the writer index so the amount of written bytes is reflected
+                output.writerIndex(output.writerIndex() + written);
+            } catch (IOException e) {
+                // release output buffer so we not leak and rethrow exception.
+                output.release();
+                throw e;
             }
-            return frame.with(frameBody);
+            return output;
+        }
+
+        private ByteBuf compressHeap(ByteBuf input) throws IOException {
+            int maxCompressedLength = Snappy.maxCompressedLength(input.readableBytes());
+            int inOffset = input.arrayOffset() + input.readerIndex();
+            byte[] in = input.array();
+            int len = input.readableBytes();
+            // Increase reader index.
+            input.readerIndex(input.writerIndex());
+
+            // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
+            // can eliminate the overhead of allocate a new byte[].
+            ByteBuf output = input.alloc().heapBuffer(maxCompressedLength);
+            try {
+                // Calculate the correct offset.
+                int offset = output.arrayOffset() + output.writerIndex();
+                byte[] out = output.array();
+                int written = Snappy.compress(in, inOffset, len, out, offset);
+
+                // Increase the writerIndex with the written bytes.
+                output.writerIndex(output.writerIndex() + written);
+            } catch (IOException e) {
+                // release output buffer so we not leak and rethrow exception.
+                output.release();
+                throw e;
+            }
+            return output;
         }
 
         @Override
         public Frame decompress(Frame frame) throws IOException {
             ByteBuf input = frame.body;
-            final ByteBuf frameBody;
-
-            if (input.isDirect()) {
-                // Using internalNioBuffer(...) as we only hold the reference in this method and so can
-                // reduce Object allocations.
-                ByteBuffer in = input.internalNioBuffer(input.readerIndex(), input.readableBytes());
-                // Increase reader index.
-                input.readerIndex(input.writerIndex());
-
-                if (!Snappy.isValidCompressedBuffer(in))
-                    throw new DriverInternalError("Provided frame does not appear to be Snappy compressed");
-
-                // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
-                // Snappy.compress(ByteBuffer, ByteBuffer) and so eliminate memory copies.
-                ByteBuf output = frame.body.alloc().directBuffer(Snappy.uncompressedLength(in));
-                try {
-                    ByteBuffer out = output.internalNioBuffer(output.writerIndex(), output.writableBytes());
-
-                    int size = Snappy.uncompress(in, out);
-                    // Set the writer index so the amount of written bytes is reflected
-                    output.writerIndex(output.writerIndex() + size);
-                    frameBody = output;
-                } catch (IOException e) {
-                    // release output buffer so we not leak and rethrow exception.
-                    output.release();
-                    throw e;
-                }
-            } else {
-                // Not a direct buffer so use byte arrays...
-                int inOffset = input.arrayOffset() + input.readerIndex();
-                byte[] in = input.array();
-                int len = input.readableBytes();
-                // Increase reader index.
-                input.readerIndex(input.writerIndex());
-
-                if (!Snappy.isValidCompressedBuffer(in, inOffset, len))
-                    throw new DriverInternalError("Provided frame does not appear to be Snappy compressed");
-
-                // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
-                // can eliminate the overhead of allocate a new byte[].
-                ByteBuf output = input.alloc().heapBuffer(Snappy.uncompressedLength(in, inOffset, len));
-                try {
-                    // Calculate the correct offset.
-                    int offset = output.arrayOffset() + output.writerIndex();
-                    byte[] out = output.array();
-                    int written = Snappy.uncompress(in, inOffset, len, out, offset);
-
-                    // Increase the writerIndex with the written bytes.
-                    output.writerIndex(output.writerIndex() + written);
-                    frameBody = output;
-                } catch (IOException e) {
-                    // release output buffer so we not leak and rethrow exception.
-                    output.release();
-                    throw e;
-                }
-            }
+            ByteBuf frameBody = input.isDirect() ? decompressDirect(input) : decompressHeap(input);
             return frame.with(frameBody);
+        }
+
+        private ByteBuf decompressDirect(ByteBuf input) throws IOException {
+            ByteBuffer in = inputNioBuffer(input);
+            // Increase reader index.
+            input.readerIndex(input.writerIndex());
+
+            if (!Snappy.isValidCompressedBuffer(in))
+                throw new DriverInternalError("Provided frame does not appear to be Snappy compressed");
+
+            // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
+            // Snappy.compress(ByteBuffer, ByteBuffer) and so eliminate memory copies.
+            ByteBuf output = input.alloc().directBuffer(Snappy.uncompressedLength(in));
+            try {
+                ByteBuffer out = outputNioBuffer(output);
+
+                int size = Snappy.uncompress(in, out);
+                // Set the writer index so the amount of written bytes is reflected
+                output.writerIndex(output.writerIndex() + size);
+            } catch (IOException e) {
+                // release output buffer so we not leak and rethrow exception.
+                output.release();
+                throw e;
+            }
+            return output;
+        }
+
+        private ByteBuf decompressHeap(ByteBuf input) throws IOException {
+            // Not a direct buffer so use byte arrays...
+            int inOffset = input.arrayOffset() + input.readerIndex();
+            byte[] in = input.array();
+            int len = input.readableBytes();
+            // Increase reader index.
+            input.readerIndex(input.writerIndex());
+
+            if (!Snappy.isValidCompressedBuffer(in, inOffset, len))
+                throw new DriverInternalError("Provided frame does not appear to be Snappy compressed");
+
+            // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
+            // can eliminate the overhead of allocate a new byte[].
+            ByteBuf output = input.alloc().heapBuffer(Snappy.uncompressedLength(in, inOffset, len));
+            try {
+                // Calculate the correct offset.
+                int offset = output.arrayOffset() + output.writerIndex();
+                byte[] out = output.array();
+                int written = Snappy.uncompress(in, inOffset, len, out, offset);
+
+                // Increase the writerIndex with the written bytes.
+                output.writerIndex(output.writerIndex() + written);
+            } catch (IOException e) {
+                // release output buffer so we not leak and rethrow exception.
+                output.release();
+                throw e;
+            }
+            return output;
         }
     }
 
@@ -208,124 +208,137 @@ abstract class FrameCompressor {
         @Override
         public Frame compress(Frame frame) throws IOException {
             ByteBuf input = frame.body;
+            ByteBuf frameBody = input.isDirect() ? compressDirect(input) : compressHeap(input);
+            return frame.with(frameBody);
+        }
+
+        private ByteBuf compressDirect(ByteBuf input) throws IOException {
             int maxCompressedLength = compressor.maxCompressedLength(input.readableBytes());
-
-            final ByteBuf frameBody;
-            if (input.isDirect()) {
-                // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
-                // LZ4Compressor.compress and so eliminate memory copies.
-                ByteBuf output = input.alloc().directBuffer(INTEGER_BYTES + maxCompressedLength);
-                try {
-                    ByteBuffer in = inputNioBuffer(input, input.readerIndex(), input.readableBytes());
-                    // Increase reader index.
-                    input.readerIndex(input.writerIndex());
-
-                    output.writeInt(in.remaining());
-
-                    ByteBuffer out = output.internalNioBuffer(output.writerIndex(), output.writableBytes());
-                    int written = compressor.compress(in, in.position(), in.remaining(), out, out.position(), out.remaining());
-                    // Set the writer index so the amount of written bytes is reflected
-                    output.writerIndex(output.writerIndex() + written);
-                    frameBody = output;
-                } catch (Exception e) {
-                    // release output buffer so we not leak and rethrow exception.
-                    output.release();
-                    throw new IOException(e);
-                }
-            } else {
-                // Not a direct buffer so use byte arrays...
-                int inOffset = input.arrayOffset() + input.readerIndex();
-                byte[] in = input.array();
-                int len = input.readableBytes();
+            // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
+            // LZ4Compressor.compress and so eliminate memory copies.
+            ByteBuf output = input.alloc().directBuffer(INTEGER_BYTES + maxCompressedLength);
+            try {
+                ByteBuffer in = inputNioBuffer(input);
                 // Increase reader index.
                 input.readerIndex(input.writerIndex());
 
-                // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
-                // can eliminate the overhead of allocate a new byte[].
-                ByteBuf output = input.alloc().heapBuffer(maxCompressedLength);
-                try {
-                    output.writeInt(len);
-                    // calculate the correct offset.
-                    int offset = output.arrayOffset() + output.writerIndex();
-                    byte[] out = output.array();
-                    int written = compressor.compress(in, inOffset, len, out, offset);
+                output.writeInt(in.remaining());
 
-                    // Set the writer index so the amount of written bytes is reflected
-                    output.writerIndex(output.writerIndex() + written);
-                    frameBody = output;
-                } catch (Exception e) {
-                    // release output buffer so we not leak and rethrow exception.
-                    output.release();
-                    throw new IOException (e);
-                }
+                ByteBuffer out = outputNioBuffer(output);
+                int written = compressor.compress(in, in.position(), in.remaining(), out, out.position(), out.remaining());
+                // Set the writer index so the amount of written bytes is reflected
+                output.writerIndex(output.writerIndex() + written);
+            } catch (Exception e) {
+                // release output buffer so we not leak and rethrow exception.
+                output.release();
+                throw new IOException(e);
             }
+            return output;
+        }
 
-            return frame.with(frameBody);
+        private ByteBuf compressHeap(ByteBuf input) throws IOException {
+            int maxCompressedLength = compressor.maxCompressedLength(input.readableBytes());
+
+            // Not a direct buffer so use byte arrays...
+            int inOffset = input.arrayOffset() + input.readerIndex();
+            byte[] in = input.array();
+            int len = input.readableBytes();
+            // Increase reader index.
+            input.readerIndex(input.writerIndex());
+
+            // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
+            // can eliminate the overhead of allocate a new byte[].
+            ByteBuf output = input.alloc().heapBuffer(maxCompressedLength);
+            try {
+                output.writeInt(len);
+                // calculate the correct offset.
+                int offset = output.arrayOffset() + output.writerIndex();
+                byte[] out = output.array();
+                int written = compressor.compress(in, inOffset, len, out, offset);
+
+                // Set the writer index so the amount of written bytes is reflected
+                output.writerIndex(output.writerIndex() + written);
+            } catch (Exception e) {
+                // release output buffer so we not leak and rethrow exception.
+                output.release();
+                throw new IOException(e);
+            }
+            return output;
         }
 
         @Override
         public Frame decompress(Frame frame) throws IOException {
             ByteBuf input = frame.body;
-            final ByteBuf frameBody;
-
-            if (input.isDirect()) {
-                // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
-                // LZ4Compressor.decompress and so eliminate memory copies.
-                int readable = input.readableBytes();
-                int uncompressedLength = input.readInt();
-                ByteBuffer in = inputNioBuffer(input, input.readerIndex(), input.readableBytes());
-                // Increase reader index.
-                input.readerIndex(input.writerIndex());
-                ByteBuf output = input.alloc().directBuffer(uncompressedLength);
-                try {
-                    ByteBuffer out = output.internalNioBuffer(output.writerIndex(), output.writableBytes());
-                    int read = decompressor.decompress(in, in.position(), out, out.position(), out.remaining());
-                    if (read != readable - INTEGER_BYTES)
-                        throw new IOException("Compressed lengths mismatch");
-
-                    // Set the writer index so the amount of written bytes is reflected
-                    output.writerIndex(output.writerIndex() + uncompressedLength);
-                    frameBody = output;
-                } catch (Exception e) {
-                    // release output buffer so we not leak and rethrow exception.
-                    output.release();
-                    throw new IOException(e);
-                }
-            } else {
-                // Not a direct buffer so use byte arrays...
-                byte[] in = input.array();
-                int len = input.readableBytes();
-                int uncompressedLength = input.readInt();
-                int inOffset = input.arrayOffset() + input.readerIndex();
-                // Increase reader index.
-                input.readerIndex(input.writerIndex());
-
-                // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
-                // can eliminate the overhead of allocate a new byte[].
-                ByteBuf output = input.alloc().heapBuffer(uncompressedLength);
-                try {
-                    int offset = output.arrayOffset() + output.writerIndex();
-                    byte out[] = output.array();
-                    int read = decompressor.decompress(in, inOffset, out, offset, uncompressedLength);
-                    if (read != len - INTEGER_BYTES)
-                        throw new IOException("Compressed lengths mismatch");
-
-                    // Set the writer index so the amount of written bytes is reflected
-                    output.writerIndex(output.writerIndex() + uncompressedLength);
-                    frameBody = output;
-                } catch (Exception e) {
-                    // release output buffer so we not leak and rethrow exception.
-                    output.release();
-                    throw new IOException (e);
-                }
-            }
+            ByteBuf frameBody = input.isDirect() ? decompressDirect(input) : decompressHeap(input);
             return frame.with(frameBody);
         }
 
-        private static ByteBuffer inputNioBuffer(ByteBuf buf, int index, int len) {
-            // Using internalNioBuffer(...) as we only hold the reference in this method and so can
-            // reduce Object allocations.
-            return buf.nioBufferCount() == 1 ? buf.internalNioBuffer(index, len) : buf.nioBuffer(index, len);
+        private ByteBuf decompressDirect(ByteBuf input) throws IOException {
+            // If the input is direct we will allocate a direct output buffer as well as this will allow us to use
+            // LZ4Compressor.decompress and so eliminate memory copies.
+            int readable = input.readableBytes();
+            int uncompressedLength = input.readInt();
+            ByteBuffer in = inputNioBuffer(input);
+            // Increase reader index.
+            input.readerIndex(input.writerIndex());
+            ByteBuf output = input.alloc().directBuffer(uncompressedLength);
+            try {
+                ByteBuffer out = outputNioBuffer(output);
+                int read = decompressor.decompress(in, in.position(), out, out.position(), out.remaining());
+                if (read != readable - INTEGER_BYTES)
+                    throw new IOException("Compressed lengths mismatch");
+
+                // Set the writer index so the amount of written bytes is reflected
+                output.writerIndex(output.writerIndex() + uncompressedLength);
+            } catch (Exception e) {
+                // release output buffer so we not leak and rethrow exception.
+                output.release();
+                throw new IOException(e);
+            }
+            return output;
         }
+
+        private ByteBuf decompressHeap(ByteBuf input) throws IOException {
+            // Not a direct buffer so use byte arrays...
+            byte[] in = input.array();
+            int len = input.readableBytes();
+            int uncompressedLength = input.readInt();
+            int inOffset = input.arrayOffset() + input.readerIndex();
+            // Increase reader index.
+            input.readerIndex(input.writerIndex());
+
+            // Allocate a heap buffer from the ByteBufAllocator as we may use a PooledByteBufAllocator and so
+            // can eliminate the overhead of allocate a new byte[].
+            ByteBuf output = input.alloc().heapBuffer(uncompressedLength);
+            try {
+                int offset = output.arrayOffset() + output.writerIndex();
+                byte out[] = output.array();
+                int read = decompressor.decompress(in, inOffset, out, offset, uncompressedLength);
+                if (read != len - INTEGER_BYTES)
+                    throw new IOException("Compressed lengths mismatch");
+
+                // Set the writer index so the amount of written bytes is reflected
+                output.writerIndex(output.writerIndex() + uncompressedLength);
+            } catch (Exception e) {
+                // release output buffer so we not leak and rethrow exception.
+                output.release();
+                throw new IOException(e);
+            }
+            return output;
+        }
+    }
+
+    private static ByteBuffer inputNioBuffer(ByteBuf buf) {
+        // Using internalNioBuffer(...) as we only hold the reference in this method and so can
+        // reduce Object allocations.
+        int index = buf.readerIndex();
+        int len = buf.readableBytes();
+        return buf.nioBufferCount() == 1 ? buf.internalNioBuffer(index, len) : buf.nioBuffer(index, len);
+    }
+
+    private static ByteBuffer outputNioBuffer(ByteBuf buf) {
+        int index = buf.writerIndex();
+        int len = buf.writableBytes();
+        return buf.nioBufferCount() == 1 ? buf.internalNioBuffer(index, len) : buf.nioBuffer(index, len);
     }
 }
